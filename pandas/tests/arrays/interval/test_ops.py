@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from pandas import Interval, IntervalIndex, Timedelta, Timestamp
+from pandas import Interval, IntervalIndex, Timedelta, Timestamp, isna
 from pandas.core.arrays import IntervalArray
 import pandas.util.testing as tm
 
@@ -25,6 +25,19 @@ def start_shift(request):
     and a shift value that can be added to start to generate an endpoint.
     """
     return request.param
+
+
+def get_expected(intervals, query, method):
+    # vectorized implementation should be consistent with the elementwise
+    # operation on the individual Interval objects
+    expected = []
+    for interval in intervals:
+        if isna(interval):
+            interval_expected = False
+        else:
+            interval_expected = getattr(interval, method)(query)
+        expected.append(interval_expected)
+    return np.array(expected)
 
 
 class TestOverlaps:
@@ -80,3 +93,61 @@ class TestOverlaps:
             other=type(other).__name__)
         with pytest.raises(TypeError, match=msg):
             interval_container.overlaps(other)
+
+
+class TestContains:
+
+    def get_tuples(self, start, shift):
+        tuples = [
+            (start, start),
+            (start + shift, start + shift),
+            (start, start + shift),
+            (start, start + 2 * shift),
+            (start + shift, start + 2 * shift),
+            (start - shift, start + 3 * shift),
+            np.nan]
+        return tuples
+
+    @pytest.fixture
+    def interval_query(self, request, start_shift, other_closed):
+        start, shift = start_shift
+        left = start + request.param[0] * shift
+        right = start + request.param[1] * shift
+        return Interval(left, right, other_closed)
+
+    @pytest.fixture
+    def scalar_query(self, request, start_shift):
+        start, shift = start_shift
+        return start + request.param * shift
+
+    @pytest.mark.parametrize('interval_query', [
+        (0, 0), (0, 1), (1, 2), (-5, 5), (10, 10)], indirect=True)
+    def test_contains_interval(
+            self, constructor, closed, interval_query, start_shift):
+        tuples = self.get_tuples(*start_shift)
+        intervals = constructor.from_tuples(tuples, closed)
+
+        result = intervals.contains(interval_query)
+        expected = get_expected(intervals, interval_query, 'contains')
+        print(result)
+        print(expected)
+        tm.assert_numpy_array_equal(result, expected)
+
+    @pytest.mark.parametrize('scalar_query', [0, 1, 10], indirect=True)
+    def test_contains_scalar(
+            self, constructor, closed, scalar_query, start_shift):
+        tuples = self.get_tuples(*start_shift)
+        intervals = constructor.from_tuples(tuples, closed)
+
+        result = intervals.contains(scalar_query)
+        expected = get_expected(intervals, scalar_query, 'contains')
+        tm.assert_numpy_array_equal(result, expected)
+
+    @pytest.mark.parametrize('other_constructor', [
+        IntervalArray, IntervalIndex])
+    def test_contains_interval_iterable(self, constructor, other_constructor):
+        # TODO: modify this test when implemented
+        interval_container = constructor.from_breaks(range(5))
+        other_container = other_constructor.from_breaks(range(5))
+        with pytest.raises(NotImplementedError):
+            interval_container.contains(other_container)

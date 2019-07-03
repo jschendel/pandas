@@ -107,6 +107,22 @@ cdef class IntervalMixin:
         """Return the length of the Interval"""
         return self.right - self.left
 
+    def _contains_nonempty(self, other):
+        if isinstance(other, Interval):
+            other_left, other_right = other.left, other.right
+            other_open_left = other.open_left
+            other_open_right = other.open_right
+        else:
+            # scalars are equivalent to Interval(other, other, closed='both')
+            other_left = other_right = other
+            other_open_left = other_open_right = False
+
+        # equality okay if endpoint is closed or the other endpoint is open
+        op1 = le if self.closed_left or other_open_left else lt
+        op2 = le if self.closed_right or other_open_right else lt
+
+        return op1(self.left, other_left) & op2(other_right, self.right)
+
     def _check_closed_matches(self, other, name='other'):
         """Check if the closed attribute of `other` matches.
 
@@ -278,10 +294,62 @@ cdef class Interval(IntervalMixin):
         return hash((self.left, self.right, self.closed))
 
     def __contains__(self, key):
-        if _interval_like(key):
-            raise TypeError('__contains__ not defined for two intervals')
-        return ((self.left < key if self.open_left else self.left <= key) and
-                (key < self.right if self.open_right else key <= self.right))
+        """
+        Check if another Interval or scalar point is contained in the Interval.
+
+        Two intervals overlap if they share a common point, including closed
+        endpoints. Intervals that only have an open endpoint in common do not
+        overlap.
+
+        .. versionadded:: 0.25.0
+
+        Parameters
+        ----------
+        key : scalar or Interval
+            The scalar or Interval to check for containment.
+
+        Returns
+        -------
+        bool
+            ``True`` if the provided scalar or Interval is contained in the
+            Interval else ``False``.
+
+        See Also
+        --------
+        IntervalArray.contains : The corresponding method for IntervalArray.
+        IntervalIndex.contains : The corresponding method for IntervalIndex.
+
+        Examples
+        --------
+        >>> i1 = pd.Interval(0, 3)
+        >>> i2 = pd.Interval(1, 2)
+        >>> i1.contains(i2)
+        True
+        >>> i2.contains(i1)
+        False
+
+        A closed endpoint contains another closed or open endpoint:
+
+        >>> i3 = pd.Interval(0, 2, closed='both')
+        >>> i4 = pd.Interval(1, 2, closed='both')
+        >>> i5 = pd.Interval(1, 2, closed='neither')
+        >>> i3.contains(i4)
+        True
+        >>> i3.contains(i5)
+        True
+
+        An open endpoint does not contain a closed enpoint:
+
+        >>> i6 = pd.Interval(0, 2, closed='neither')
+        >>> i7 = pd.Interval(1, 2, closed='both')
+        >>> i6.contains(i7)
+        False
+        """
+        if (isinstance(key, Interval) and key.left == key.right and
+                key.closed != 'both'):
+            return True
+        return super()._contains_nonempty(key)
+
 
     def __richcmp__(self, other, op: int):
         if hasattr(other, 'ndim'):
@@ -370,6 +438,8 @@ cdef class Interval(IntervalMixin):
             return Interval(
                 self.left // y, self.right // y, closed=self.closed)
         return NotImplemented
+
+    contains = __contains__
 
     def overlaps(self, other):
         """

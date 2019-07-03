@@ -1049,15 +1049,13 @@ class IntervalArray(IntervalMixin, ExtensionArray):
 
     @Appender(_interval_shared_docs['contains'] % _shared_docs_kwargs)
     def contains(self, other):
-        if isinstance(other, Interval):
-            raise NotImplementedError(
-                'contains not implemented for two intervals'
-            )
+        if isinstance(other, (IntervalArray, ABCIntervalIndex)):
+            raise NotImplementedError
+        elif (isinstance(other, Interval) and other.left == other.right and
+              other.closed != 'both'):
+            return ~self.isna()
 
-        return (
-            (self.left < other if self.open_left else self.left <= other) &
-            (other < self.right if self.open_right else other <= self.right)
-        )
+        return super()._contains_nonempty(other)
 
     _interval_shared_docs['overlaps'] = """
         Check elementwise if an Interval overlaps the values in the %(klass)s.
