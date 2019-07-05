@@ -374,6 +374,22 @@ def other_closed(request):
     return request.param
 
 
+@pytest.fixture(
+    params=[
+        (0, 1),
+        (pd.Timestamp("2018-01-01"), pd.Timedelta("1 day")),
+        (pd.Timedelta("0 days"), pd.Timedelta("1 day")),
+    ],
+    ids=lambda x: type(x[0]).__name__,
+)
+def interval_start_shift(request):
+    """
+    Fixture for generating intervals of types from a start value and a shift
+    value that can be added to start to generate an endpoint
+    """
+    return request.param
+
+
 @pytest.fixture(params=[None, np.nan, pd.NaT, float("nan"), np.float("NaN")])
 def nulls_fixture(request):
     """

@@ -1,4 +1,3 @@
-from operator import le, lt
 import textwrap
 
 import numpy as np
@@ -1174,18 +1173,20 @@ class IntervalArray(IntervalMixin, ExtensionArray):
     def overlaps(self, other):
         if isinstance(other, (IntervalArray, ABCIntervalIndex)):
             raise NotImplementedError
-        elif not isinstance(other, Interval):
-            msg = "`other` must be Interval-like, got {other}"
-            raise TypeError(msg.format(other=type(other).__name__))
+        elif isinstance(other, Interval) and other.is_empty:
+            # empty intervals never overlap anything
+            return np.zeros(len(self), dtype=bool)
 
-        # equality is okay if both endpoints are closed (overlap at a point)
-        op1 = le if (self.closed_left and other.closed_right) else lt
-        op2 = le if (other.closed_left and self.closed_right) else lt
+        # intialize as false to handle empty intervals in the array
+        result = np.zeros(len(self), dtype=bool)
 
-        # overlaps is equivalent negation of two interval being disjoint:
-        # disjoint = (A.left > B.right) or (B.left > A.right)
-        # (simplifying the negation allows this to be done in less operations)
-        return op1(self.left, other.right) & op2(other.left, self.right)
+        # defer to parent class for generic non-empty overlaps method
+        non_empty_mask = ~self.is_empty
+        non_empty_result = self[non_empty_mask]._overlaps_non_empty(other)
+
+        # update with non-empty results
+        result[non_empty_mask] = non_empty_result
+        return result
 
 
 def maybe_convert_platform_interval(values):

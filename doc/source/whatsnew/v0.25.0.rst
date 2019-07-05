@@ -1032,6 +1032,7 @@ Interval
 - Fixed bug in :class:`Series`/:class:`DataFrame` not displaying ``NaN`` in :class:`IntervalIndex` with missing values (:issue:`25984`)
 - Bug in :meth:`IntervalIndex.get_loc` where a ``KeyError`` would be incorrectly raised for a decreasing :class:`IntervalIndex` (:issue:`25860`)
 - Bug in :class:`Index` constructor where passing mixed closed :class:`Interval` objects would result in a ``ValueError`` instead of an ``object`` dtype ``Index`` (:issue:`27172`)
+- Bug in the :meth:`~Interval.overlaps` method for :class:`Interval`, :class:`~arrays.IntervalArray`, and :class:`IntervalIndex` where empty ``Interval`` objects could incorrectly be marked as overlapping. (:issue:`26893`)
 
 Indexing
 ^^^^^^^^

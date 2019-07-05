@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from pandas import Interval, IntervalIndex, Timedelta, Timestamp
+from pandas import Interval, IntervalIndex, Timedelta, Timestamp, isna
 from pandas.core.arrays import IntervalArray
 import pandas.util.testing as tm
 
@@ -15,75 +15,119 @@ def constructor(request):
     return request.param
 
 
-@pytest.fixture(
-    params=[
-        (Timedelta("0 days"), Timedelta("1 day")),
-        (Timestamp("2018-01-01"), Timedelta("1 day")),
-        (0, 1),
-    ],
-    ids=lambda x: type(x[0]).__name__,
-)
-def start_shift(request):
+@pytest.fixture
+def intervals(request, constructor, interval_start_shift, closed):
     """
-    Fixture for generating intervals of different types from a start value
-    and a shift value that can be added to start to generate an endpoint.
+    Fixture for generating an IntervalArray/IntervalIndex of different
+    dtypes and closed to be used as test cases.
     """
-    return request.param
+    start, shift = interval_start_shift
+    tuples = [
+        (start - 2 * shift, start - shift),      # before disjoint
+        (start - shift, start),                  # before touching left
+        (start - shift, start + shift),          # before touching inside
+        (start - shift, start + 3 * shift),      # before touching right
+        (start, start + shift),                  # inside touching left
+        (start + shift, start + 3 * shift),      # inside touching right
+        (start + shift, start + 2 * shift),      # nested
+        (start, start + 3 * shift),              # same
+        (start, start + 4 * shift),              # after touching left
+        (start + shift, start + 4 * shift),      # after touching inside
+        (start + 3 * shift, start + 4 * shift),  # after touching right
+        (start + 4 * shift, start + 5 * shift),  # after disjoint
+        (start - shift, start + 4 * shift),      # containing
+        (start - shift, start - shift),          # degenerate before
+        (start, start),                          # degenerate touching left
+        (start + shift, start + shift),          # degenerate inside
+        (start + 3 * shift, start + 3 * shift),  # degenerate touching right
+        (start + 4 * shift, start + 4 * shift),  # degenerate after
+        np.nan,                                  # missing value
+    ]
+    return constructor.from_tuples(tuples, closed=closed)
 
 
-class TestOverlaps:
-    def test_overlaps_interval(self, constructor, start_shift, closed, other_closed):
-        start, shift = start_shift
-        interval = Interval(start, start + 3 * shift, other_closed)
+@pytest.fixture(params=[(0, 3), (0, 0), (10, 10)])
+def interval(request, interval_start_shift, other_closed):
+    """
+    Fixture for generating Intervals of different dtypes and closed to use as
+    test cases for the various methods.
 
-        # intervals: identical, nested, spanning, partial, adjacent, disjoint
-        tuples = [
-            (start, start + 3 * shift),
-            (start + shift, start + 2 * shift),
-            (start - shift, start + 4 * shift),
-            (start + 2 * shift, start + 4 * shift),
-            (start + 3 * shift, start + 4 * shift),
-            (start + 4 * shift, start + 5 * shift),
-        ]
-        interval_container = constructor.from_tuples(tuples, closed)
+    The fixture params denote the (left, right) `shift` multiplier to be added
+    to `start` in order build the endpoints of an Interval.
+    """
+    start, shift = interval_start_shift
+    left = start + request.param[0] * shift
+    right = start + request.param[1] * shift
+    return Interval(left, right, other_closed)
 
-        adjacent = interval.closed_right and interval_container.closed_left
-        expected = np.array([True, True, True, True, adjacent, False])
-        result = interval_container.overlaps(interval)
+
+@pytest.fixture(params=[-10, 0, 1, 3, 10])
+def point(request, interval_start_shift):
+    """
+    Fixture for generating points of different dtypes to use as test cases for
+    the various methods.
+
+    The fixture params denote the `shift` multiplier to be added to `start` in
+    order to generate the point.
+    """
+    start, shift = interval_start_shift
+    return start + request.param * shift
+
+
+class QueryCases:
+
+    # name of method being tests; to be defined in child class
+    method_name = None
+
+    def get_expected(self, intervals, query):
+        # vectorized implementation should be consistent with the elementwise
+        # operation on the individual Interval objects
+        expected = []
+        for interval in intervals:
+            if isna(interval):
+                interval_expected = False
+            else:
+                interval_expected = getattr(interval, self.method_name)(query)
+            expected.append(interval_expected)
+        return np.array(expected)
+
+    def test_interval_queries(self, intervals, interval):
+        # generically test interval queries for interval methods
+        result = getattr(intervals, self.method_name)(interval)
+        expected = self.get_expected(intervals, interval)
         tm.assert_numpy_array_equal(result, expected)
 
-    @pytest.mark.parametrize("other_constructor", [IntervalArray, IntervalIndex])
-    def test_overlaps_interval_container(self, constructor, other_constructor):
-        # TODO: modify this test when implemented
-        interval_container = constructor.from_breaks(range(5))
-        other_container = other_constructor.from_breaks(range(5))
+    def test_point_queries(self, intervals, point):
+        # generically test point queries for interval methods
+        result = getattr(intervals, self.method_name)(point)
+        expected = self.get_expected(intervals, point)
+        tm.assert_numpy_array_equal(result, expected)
+
+    @pytest.mark.parametrize("constructor2", [IntervalArray, IntervalIndex])
+    def test_interval_iterable_notimplemented(self, constructor, constructor2):
+        # interval iterable queries not currently supported
+        intervals = constructor.from_breaks(range(5))
+        intervals2 = constructor2.from_breaks(range(5))
         with pytest.raises(NotImplementedError):
-            interval_container.overlaps(other_container)
+            getattr(intervals, self.method_name)(intervals2)
 
-    def test_overlaps_na(self, constructor, start_shift):
-        """NA values are marked as False"""
-        start, shift = start_shift
-        interval = Interval(start, start + shift)
 
-        tuples = [
-            (start, start + shift),
-            np.nan,
-            (start + 2 * shift, start + 3 * shift),
-        ]
-        interval_container = constructor.from_tuples(tuples)
+class TestOverlaps(QueryCases):
 
-        expected = np.array([True, False, False])
-        result = interval_container.overlaps(interval)
-        tm.assert_numpy_array_equal(result, expected)
+    method_name = "overlaps"
+
+    @pytest.mark.skip(reason="point queries are not supported by overlaps")
+    def test_point_queries(self):
+        pass
 
     @pytest.mark.parametrize(
         "other",
         [10, True, "foo", Timedelta("1 day"), Timestamp("2018-01-01")],
         ids=lambda x: type(x).__name__,
     )
-    def test_overlaps_invalid_type(self, constructor, other):
+    def test_overlaps_point_errors(self, constructor, other):
         interval_container = constructor.from_breaks(range(5))
-        msg = "`other` must be Interval-like, got {other}".format(
+        msg = "`other` must be an Interval, got {other}".format(
             other=type(other).__name__
         )
         with pytest.raises(TypeError, match=msg):

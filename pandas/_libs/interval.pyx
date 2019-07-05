@@ -160,6 +160,25 @@ cdef class IntervalMixin:
         """
         return (self.right == self.left) & (self.closed != 'both')
 
+    def _overlaps_non_empty(self, other):
+        """
+        Common overlaps implementation for all Interval structures that handles
+        overlaps for points and non-empty Intervals. Child class methods should
+        implement proper behavior for empty Intervals.
+        """
+        if not isinstance(other, Interval):
+            msg = '`other` must be an Interval, got {other}'
+            raise TypeError(msg.format(other=type(other).__name__))
+
+        # equality is okay if both endpoints are closed (overlap at a point)
+        op1 = le if (self.closed_left and other.closed_right) else lt
+        op2 = le if (other.closed_left and self.closed_right) else lt
+
+        # overlaps is equivalent negation of two interval being disjoint:
+        # disjoint = (A.left > B.right) or (B.left > A.right)
+        # (simplifying the negation allows this to be done in less operations)
+        return op1(self.left, other.right) & op2(other.left, self.right)
+
     def _check_closed_matches(self, other, name='other'):
         """Check if the closed attribute of `other` matches.
 
@@ -472,18 +491,12 @@ cdef class Interval(IntervalMixin):
         >>> i4.overlaps(i6)
         False
         """
-        if not isinstance(other, Interval):
-            msg = '`other` must be an Interval, got {other}'
-            raise TypeError(msg.format(other=type(other).__name__))
+        if self.is_empty or (isinstance(other, Interval) and other.is_empty):
+            # empty intervals never overlap anything
+            return False
 
-        # equality is okay if both endpoints are closed (overlap at a point)
-        op1 = le if (self.closed_left and other.closed_right) else lt
-        op2 = le if (other.closed_left and self.closed_right) else lt
-
-        # overlaps is equivalent negation of two interval being disjoint:
-        # disjoint = (A.left > B.right) or (B.left > A.right)
-        # (simplifying the negation allows this to be done in less operations)
-        return op1(self.left, other.right) and op2(other.left, self.right)
+        # defer to parent class for generic non-empty overlaps method
+        return self._overlaps_non_empty(other)
 
 
 @cython.wraparound(False)
