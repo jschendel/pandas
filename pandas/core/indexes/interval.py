@@ -20,6 +20,7 @@ from pandas.core.dtypes.cast import (
 from pandas.core.dtypes.common import (
     ensure_platform_int,
     is_categorical,
+    is_categorical_dtype,
     is_datetime64tz_dtype,
     is_datetime_or_timedelta_dtype,
     is_dtype_equal,
@@ -30,6 +31,7 @@ from pandas.core.dtypes.common import (
     is_interval_dtype,
     is_list_like,
     is_number,
+    is_numeric_dtype,
     is_object_dtype,
     is_scalar,
 )
@@ -836,6 +838,36 @@ class IntervalIndex(IntervalMixin, Index):
             stop = self._searchsorted_monotonic(key, "right")
         return start, stop
 
+    def _is_comparable(self, other, allow_object_dtype=False):
+        """
+        TODO: Write this docstring!
+        """
+        if is_scalar(other):
+            dtype = infer_dtype_from_scalar(other, pandas_dtype=True)[0]
+        else:
+            dtype = ensure_index(other).dtype
+
+        # categoricals are comparable if categories are comparable
+        if is_categorical_dtype(dtype):
+            return self._is_comparable(other.categories)
+
+        # intervals are comparable if they have same closed and comparable subtypes
+        if is_interval_dtype(dtype):
+            if self.closed != other.closed:
+                return False
+            dtype = dtype.subtype
+
+        # numeric dtypes are comparable without being exactly the same
+        if is_numeric_dtype(self.dtype.subtype) and is_numeric_dtype(dtype):
+            return True
+
+        # non-numeric dtypes require and exact match to be comparable
+        if is_dtype_equal(self.dtype.subtype, dtype):
+            return True
+
+        # only allow list-like object dtype if specified
+        return allow_object_dtype and is_list_like(other) and is_object_dtype(dtype)
+
     def get_loc(
         self, key: Any, method: Optional[str] = None, tolerance=None
     ) -> Union[int, slice, np.ndarray]:
@@ -941,17 +973,15 @@ class IntervalIndex(IntervalMixin, Index):
 
         target_as_index = ensure_index(target)
 
-        if isinstance(target_as_index, IntervalIndex):
+        # short-circuit if not comparable since it implies no matches
+        if not self._is_comparable(target_as_index, allow_object_dtype=True):
+            return -np.ones(len(target_as_index), dtype="intp")
+
+        # specific cases for comparable target_as_index
+        if is_interval_dtype(target_as_index):
             # equal indexes -> 1:1 positional match
             if self.equals(target_as_index):
                 return np.arange(len(self), dtype="intp")
-
-            # different closed or incompatible subtype -> no matches
-            common_subtype = find_common_type(
-                [self.dtype.subtype, target_as_index.dtype.subtype]
-            )
-            if self.closed != target_as_index.closed or is_object_dtype(common_subtype):
-                return np.repeat(np.intp(-1), len(target_as_index))
 
             # non-overlapping -> at most one match per interval in target_as_index
             # want exact matches -> need both left/right to match, so defer to
@@ -963,13 +993,9 @@ class IntervalIndex(IntervalMixin, Index):
             # get an indexer for unique categories then propogate to codes via take_1d
             categories_indexer = self.get_indexer(target_as_index.categories)
             indexer = take_1d(categories_indexer, target_as_index.codes, fill_value=-1)
-        elif not is_object_dtype(target_as_index):
-            # homogeneous scalar index: use IntervalTree
-            target_as_index = self._maybe_convert_i8(target_as_index)
-            indexer = self._engine.get_indexer(target_as_index.values)
-        else:
+        elif is_object_dtype(target_as_index):
             # heterogeneous scalar index: defer elementwise to get_loc
-            # (non-overlapping so get_loc guarantees scalar of KeyError)
+            # (non-overlapping so get_loc guarantees scalar or KeyError)
             indexer = []
             for key in target_as_index:
                 try:
@@ -977,6 +1003,10 @@ class IntervalIndex(IntervalMixin, Index):
                 except KeyError:
                     loc = -1
                 indexer.append(loc)
+        else:
+            # comparable homogeneous scalar index of points: use IntervalTree
+            target_as_index = self._maybe_convert_i8(target_as_index)
+            indexer = self._engine.get_indexer(target_as_index.values)
 
         return ensure_platform_int(indexer)
 

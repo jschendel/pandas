@@ -21,6 +21,11 @@ import pandas.core.common as com
 import pandas.util.testing as tm
 
 
+@pytest.fixture(scope="class", params=[True, False])
+def allow_object_dtype(request):
+    return request.param
+
+
 @pytest.fixture(scope="class", params=[None, "foo"])
 def name(request):
     return request.param
@@ -859,6 +864,98 @@ class TestIntervalIndex:
         )
         year_2017_index = pd.IntervalIndex([year_2017])
         assert not year_2017_index.is_all_dates
+
+    @pytest.mark.parametrize(
+        "scalar, scalar_type",
+        [
+            (0, "numeric"),
+            (0.0, "numeric"),
+            (np.uint64(0), "numeric"),
+            (Timestamp("2020"), "datetime"),
+            (Timestamp("2020", tz="UTC"), "datetimetz"),
+            (Timedelta("0 days"), "timedelta"),
+            (pd.Period("2020", freq="Q"), "period"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "breaks, breaks_type",
+        [
+            (np.arange(10, dtype="int64"), "numeric"),
+            (np.arange(10, dtype="uint64"), "numeric"),
+            (np.arange(10, dtype="float64"), "numeric"),
+            (date_range("2020", periods=10), "datetime"),
+            (date_range("2020", periods=10, tz="UTC"), "datetimetz"),
+            (timedelta_range("0 days", periods=10), "timedelta"),
+        ],
+    )
+    def test_is_comparable(
+        self, breaks, breaks_type, scalar, scalar_type, allow_object_dtype
+    ):
+        index = IntervalIndex.from_breaks(breaks)
+        expected = breaks_type == scalar_type
+
+        # scalar
+        result = index._is_comparable(scalar, allow_object_dtype=allow_object_dtype)
+        assert result is expected
+
+        # list-like
+        listlike = [scalar] * 10
+        result = index._is_comparable(listlike, allow_object_dtype=allow_object_dtype)
+        assert result is expected
+
+        # categorical
+        cat = pd.CategoricalIndex([scalar] * 10)
+        result = index._is_comparable(cat, allow_object_dtype=allow_object_dtype)
+        assert result is expected
+
+        # can only construct intervals from these types
+        if scalar_type in ("numeric", "datetime", "datetimetz", "timedelta"):
+            # interval (same closed)
+            iv = Interval(scalar, scalar)
+            result = index._is_comparable(iv, allow_object_dtype=allow_object_dtype)
+            assert result is expected
+
+            # interval index (same closed)
+            ii = IntervalIndex([Interval(scalar, scalar)] * 10)
+            result = index._is_comparable(ii, allow_object_dtype=allow_object_dtype)
+            assert result is expected
+
+            # categorical[interval] (same closed)
+            cat_ii = pd.CategoricalIndex(ii)
+            result = index._is_comparable(cat_ii, allow_object_dtype=allow_object_dtype)
+            assert result is expected
+
+    def test_is_comparable_mixed_closed(self, closed, other_closed, allow_object_dtype):
+        index = interval_range(0, 10, closed=closed)
+        expected = closed == other_closed
+
+        # interval
+        iv = Interval(0, 3, closed=other_closed)
+        result = index._is_comparable(iv, allow_object_dtype=allow_object_dtype)
+        assert result is expected
+
+        # interval index
+        ii = interval_range(10.5, 15.5, closed=other_closed)
+        result = index._is_comparable(ii, allow_object_dtype=allow_object_dtype)
+        assert result is expected
+
+        # categorical[interval]
+        cat_ii = pd.CategoricalIndex(ii)
+        result = index._is_comparable(cat_ii, allow_object_dtype=allow_object_dtype)
+        assert result is expected
+
+    def test_is_comparable_allow_object_dtype(self, allow_object_dtype):
+        index = interval_range(0, 10)
+
+        # scalar with inferred object dtype should never be allowed
+        scalar = "foo"
+        result = index._is_comparable(scalar, allow_object_dtype=allow_object_dtype)
+        assert result is False
+
+        # list-like object dtype allowed when specified
+        listlike = [scalar] * 10
+        result = index._is_comparable(listlike, allow_object_dtype=allow_object_dtype)
+        assert result is allow_object_dtype
 
 
 def test_dir():

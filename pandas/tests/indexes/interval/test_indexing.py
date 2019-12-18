@@ -9,6 +9,7 @@ from pandas import (
     IntervalIndex,
     Timedelta,
     date_range,
+    period_range,
     timedelta_range,
 )
 from pandas.core.indexes.base import InvalidIndexError
@@ -255,6 +256,15 @@ class TestGetIndexer:
 
         result = index.get_indexer(categorical_target)
         expected = index.get_indexer(target)
+        tm.assert_numpy_array_equal(result, expected)
+
+    def test_get_indexer_period(self):
+        # GH 30178
+        index = IntervalIndex.from_breaks(date_range("2020", periods=5, freq="3D"))
+        period_target = period_range("2018-01-01", periods=4, freq="D")
+
+        result = index.get_indexer(period_target)
+        expected = np.array([-1, -1, -1, -1], dtype="intp")
         tm.assert_numpy_array_equal(result, expected)
 
     @pytest.mark.parametrize(
