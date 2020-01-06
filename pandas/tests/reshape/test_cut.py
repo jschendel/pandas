@@ -304,7 +304,9 @@ def test_cut_out_of_bounds():
         ),
         (
             lambda labels: Categorical.from_codes([0, 1, 2], labels),
-            lambda labels: Categorical.from_codes([1] + 4 * [0] + [1, 2], labels),
+            lambda labels: Categorical.from_codes(
+                [1] + 4 * [0] + [1, 2], labels, ordered=True
+            ),
         ),
     ],
 )

@@ -5,16 +5,17 @@ import numpy as np
 
 from pandas._libs import Timedelta, Timestamp
 from pandas._libs.lib import infer_dtype
+from pandas.errors import AbstractMethodError
 
 from pandas.core.dtypes.common import (
     _NS_DTYPE,
     ensure_int64,
     is_bool_dtype,
-    is_categorical_dtype,
     is_datetime64_dtype,
     is_datetime64tz_dtype,
     is_datetime_or_timedelta_dtype,
     is_integer,
+    is_interval_dtype,
     is_list_like,
     is_scalar,
     is_timedelta64_dtype,
@@ -238,9 +239,10 @@ def cut(
             else:
                 bins[-1] += adj
 
-    elif isinstance(bins, IntervalIndex):
-        if bins.is_overlapping:
-            raise ValueError("Overlapping IntervalIndex is not accepted.")
+    elif is_interval_dtype(bins):
+        # ensure we have an IntervalIndex (not IntervalArray)
+        if not isinstance(bins, IntervalIndex):
+            bins = IntervalIndex(bins)
 
     else:
         if is_datetime64tz_dtype(bins):
@@ -363,66 +365,124 @@ def _bins_to_cuts(
 
     if duplicates not in ["raise", "drop"]:
         raise ValueError(
-            "invalid value for 'duplicates' parameter, "
-            "valid options are: raise, drop"
+            "invalid value for 'duplicates' parameter, valid options are: "
+            "raise, drop"
         )
 
-    if isinstance(bins, IntervalIndex):
-        # we have a fast-path here
-        ids = bins.get_indexer(x)
-        result = Categorical.from_codes(ids, categories=bins, ordered=True)
-        return result, bins
+    if not (labels is None or labels is False or is_list_like(labels)):
+        raise ValueError(
+            "Bin labels must either be False, None or passed in as a list-like argument"
+        )
 
-    unique_bins = algos.unique(bins)
-    if len(unique_bins) < len(bins) and len(bins) != 2:
-        if duplicates == "raise":
+    bins_ctor = _IntervalBins if is_interval_dtype(bins) else _ScalarBins
+    bins_obj = bins_ctor(bins, duplicates)
+
+    labels = bins_obj.preprocess_labels(labels, precision, right, include_lowest, dtype)
+    ids, na_mask = bins_obj.get_ids(x, right, include_lowest)
+    result = bins_obj.get_result(labels, ids, na_mask)
+
+    return result, bins_obj.bins
+
+
+class _Bins:
+    def __init__(self, bins, duplicates):
+        self.bins = self.uniquify_bins(bins, duplicates)
+
+    def preprocess_labels(self, labels, precision, right, include_lowest, dtype):
+        if labels is False:
+            # keep False as sentinel value indicating labels will be the ids
+            return labels
+        elif labels is None:
+            return self.get_labels_from_bins(precision, right, include_lowest, dtype)
+        else:
+            self.validate_list_like_labels(labels)
+            return labels
+
+    def get_result(self, labels, ids, na_mask):
+        if labels is not False:
+            return Categorical.from_codes(ids, categories=labels, ordered=True)
+
+        result = ids
+        if na_mask.any():
+            result = result.astype(np.float64)
+            np.putmask(result, na_mask, np.nan)
+
+        return result
+
+    def uniquify_bins(self, bins, duplicates):
+        raise AbstractMethodError(self)
+
+    def get_labels_from_bins(self, precision, right, include_lowest, dtype):
+        raise AbstractMethodError(self)
+
+    def validate_list_like_labels(self, labels):
+        raise AbstractMethodError(self)
+
+    def get_ids(self, x, right, include_lowest):
+        raise AbstractMethodError(self)
+
+
+class _IntervalBins(_Bins):
+    def uniquify_bins(self, bins, duplicates):
+        if not bins.is_unique:
+            if duplicates == "raise":
+                raise ValueError(
+                    f"Bin edges must be unique: {repr(bins)}.\n"
+                    f"You can drop duplicate edges by setting the 'duplicates' kwarg"
+                )
+            bins = bins.unique()
+
+        if bins.is_overlapping:
+            raise ValueError("Overlapping IntervalIndex is not accepted.")
+
+        return bins
+
+    def get_labels_from_bins(self, precision, right, include_lowest, dtype):
+        return self.bins
+
+    def validate_list_like_labels(self, labels):
+        if len(labels) != len(self.bins):
+            raise ValueError("Bin labels must be equal to the number of interval bins")
+
+    def get_ids(self, x, right, include_lowest):
+        ids = self.bins.get_indexer(x)
+        return ids, ids == -1
+
+
+class _ScalarBins(_Bins):
+    def uniquify_bins(self, bins, duplicates):
+        # GH 15431: don't dedupe if there are two bins
+        if len(bins) == 2:
+            return bins
+
+        unique_bins = algos.unique(bins)
+        if len(unique_bins) < len(bins) and duplicates == "raise":
             raise ValueError(
                 f"Bin edges must be unique: {repr(bins)}.\n"
                 f"You can drop duplicate edges by setting the 'duplicates' kwarg"
             )
-        else:
-            bins = unique_bins
+        return unique_bins
 
-    side = "left" if right else "right"
-    ids = ensure_int64(bins.searchsorted(x, side=side))
+    def get_labels_from_bins(self, precision, right, include_lowest, dtype):
+        return _format_labels(self.bins, precision, right, include_lowest, dtype)
 
-    if include_lowest:
-        ids[x == bins[0]] = 1
-
-    na_mask = isna(x) | (ids == len(bins)) | (ids == 0)
-    has_nas = na_mask.any()
-
-    if labels is not False:
-        if not (labels is None or is_list_like(labels)):
+    def validate_list_like_labels(self, labels):
+        if len(labels) != len(self.bins) - 1:
             raise ValueError(
-                "Bin labels must either be False, None or passed in as a "
-                "list-like argument"
+                "Bin labels must be one fewer than the number of bin edges"
             )
 
-        elif labels is None:
-            labels = _format_labels(
-                bins, precision, right=right, include_lowest=include_lowest, dtype=dtype
-            )
+    def get_ids(self, x, right, include_lowest):
+        side = "left" if right else "right"
+        ids = ensure_int64(self.bins.searchsorted(x, side=side))
 
-        else:
-            if len(labels) != len(bins) - 1:
-                raise ValueError(
-                    "Bin labels must be one fewer than the number of bin edges"
-                )
+        if include_lowest:
+            ids[x == self.bins[0]] = 1
 
-        if not is_categorical_dtype(labels):
-            labels = Categorical(labels, categories=labels, ordered=True)
-
+        na_mask = isna(x) | (ids == len(self.bins)) | (ids == 0)
         np.putmask(ids, na_mask, 0)
-        result = algos.take_nd(labels, ids - 1)
 
-    else:
-        result = ids - 1
-        if has_nas:
-            result = result.astype(np.float64)
-            np.putmask(result, na_mask, np.nan)
-
-    return result, bins
+        return ids - 1, na_mask
 
 
 def _coerce_to_type(x):
