@@ -8,7 +8,13 @@ from warnings import catch_warnings, simplefilter, warn
 
 import numpy as np
 
-from pandas._libs import Timestamp, algos, hashtable as htable, lib
+from pandas._libs import (
+    Timestamp,
+    algos,
+    hashtable as htable,
+    lib,
+    missing as libmissing,
+)
 from pandas._libs.tslib import iNaT
 from pandas.util._decorators import Appender, Substitution
 
@@ -1722,7 +1728,7 @@ def take_2d_multi(arr, indexer, fill_value=np.nan):
 # ------------ #
 
 
-def searchsorted(arr, value, side="left", sorter=None):
+def searchsorted_old(arr, value, side="left", sorter=None):
     """
     Find indices where elements should be inserted to maintain order.
 
@@ -1803,6 +1809,57 @@ def searchsorted(arr, value, side="left", sorter=None):
 
     result = arr.searchsorted(value, side=side, sorter=sorter)
     return result
+
+
+def searchsorted(arr, value, side="left", sorter=None):
+
+    if sorter is not None:
+        sorter = ensure_platform_int(sorter)
+
+    arr_can_hold_na = _can_hold_pandas_na(arr)
+    value_can_hold_na = _can_hold_pandas_na(value)
+
+    # directly delegate to searchsorted if we don't need to worry about pd.NA
+    if not (arr_can_hold_na or value_can_hold_na or value is libmissing.NA):
+        return searchsorted_old(arr, value, side, sorter)
+
+    arr_mask, arr_na_count, arr_notna, sorter_notna = _get_mask_metadata(arr, sorter)
+    na_position = len(arr) if side == "right" else len(arr) - arr_na_count
+
+    if value is libmissing.NA:
+        return na_position
+    else:
+        value_mask, value_na_count, value_notna, _ = _get_mask_metadata(value)
+
+    # can search among non-na values to determine non-na insertion position
+    result_notna = searchsorted_old(arr_notna, value_notna, side, sorter_notna)
+
+    # short-circuit if we don't need to handle na
+    if not value_na_count:
+        return result_notna
+
+    result = np.empty(len(value), dtype="intp")
+    result[value_mask] = na_position
+    result[~value_mask] = result_notna
+    return result
+
+
+def _can_hold_pandas_na(arr):
+    return getattr(arr, "_na_value", None) is libmissing.NA or is_object_dtype(arr)
+
+
+def _get_mask_metadata(arr, sorter=None):
+    arr_mask = getattr(arr, "_mask", isna(arr))
+    arr_na_count = arr_mask.sum()
+
+    # short-circuit if no na values to mask from arr/sorter
+    if not arr_na_count:
+        return arr_mask, arr_na_count, arr, sorter
+
+    arr_notna = arr[~arr_mask]
+    sorter_notna = sorter[~arr_mask] if sorter is not None else None
+
+    return arr_mask, arr_na_count, arr_notna, sorter_notna
 
 
 # ---- #

@@ -20,7 +20,6 @@ from pandas.core.dtypes.common import (
     is_timedelta64_dtype,
 )
 from pandas.core.dtypes.generic import ABCSeries
-from pandas.core.dtypes.missing import isna
 
 from pandas import Categorical, Index, IntervalIndex, to_datetime, to_timedelta
 import pandas.core.algorithms as algos
@@ -383,12 +382,12 @@ def _bins_to_cuts(
             bins = unique_bins
 
     side = "left" if right else "right"
-    ids = ensure_int64(bins.searchsorted(x, side=side))
+    ids = ensure_int64(algos.searchsorted(bins, x, side=side))
 
     if include_lowest:
         ids[x == bins[0]] = 1
 
-    na_mask = isna(x) | (ids == len(bins)) | (ids == 0)
+    na_mask = (ids == len(bins)) | (ids == 0)
     has_nas = na_mask.any()
 
     if labels is not False:
