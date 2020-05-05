@@ -123,6 +123,10 @@ echo
 echo "conda list pandas"
 conda list pandas
 
+echo
+echo "conda list"
+conda list
+
 # Make sure any error below is reported as such
 
 echo "[Build extensions]"
